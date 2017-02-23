@@ -1,0 +1,4 @@
+*.sw*
+file_dump.json
+dump.db
+

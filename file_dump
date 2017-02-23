@@ -1,0 +1,231 @@
+#!/usr/bin/env perl
+use Mojolicious::Lite;
+
+use strict;
+
+use Data::UUID;
+use DBI;
+
+plugin 'BasicAuth';
+plugin 'JSONConfig';
+plugin 'RenderFile';
+
+my $db;
+helper db => sub {
+  $db //= DBI->connect('DBI:SQLite:' . app->config->{db}, "", "") || die $DBI::errstr;
+  $db;
+};
+
+my $uuid;
+helper uuid => sub {
+  $uuid //= Data::UUID->new;
+  $uuid;
+};
+
+helper clean => sub {
+  my $c = shift;
+
+  my $time   = time;
+  my $select = 'SELECT path FROM file_dump WHERE expires <= ?';
+  my $sth    = $c->db->prepare( $select );
+
+  $sth->execute($time);
+  while ( my ($path) = $sth->fetchrow_array ) {
+    unlink $path;
+  }
+
+  my $sql = 'DELETE FROM file_dump WHERE expires <= ?';
+  $c->db->do( $sql, undef, $time );
+};
+
+helper get_file => sub {
+  my $c    = shift;
+  my $hash = shift;
+
+  my $sql = 'SELECT path, filename FROM file_dump WHERE access_hash = ?';
+  my $sth = $c->db->prepare( $sql );
+
+  $sth->execute( $hash );
+
+  my $file;
+  while ( my ($path, $base) = $sth->fetchrow_array() ) {
+    $file = {
+        path => $path,
+        basename => $base,
+    };
+  }
+
+  return $file;
+};
+
+helper insert_file => sub {
+  my $c = shift;
+
+  my $file = $c->req->upload('to_dump');
+
+  if ( !$file ) {
+    return;
+  }
+
+  my $check     = 'SELECT access_hash FROM file_dump WHERE access_hash = ?';
+  my $check_sth = $c->db->prepare( $check );
+
+  my $uuid;
+  while ( !$uuid ) {
+    $uuid = $c->uuid->create_str;
+
+    $check_sth->execute( $uuid );
+
+    my $exists;
+    while ( my ($hash) = $check_sth->fetchrow_array ) {
+        $exists++;
+    }
+
+    $uuid = undef if $exists;
+  }
+
+  my $days = $c->param('days');
+  $days    = 7 if !$days or $days <= 0;
+
+  my $time = time + ( $days * 24 * 60 * 60 );
+
+  my $basename = Mojo::File->new( $file->filename )->basename;
+  my $path     = Mojo::File->new( app->config->{upload_path}, $uuid );
+  $file->move_to( $path );
+
+  my $insert = 'INSERT INTO file_dump( access_hash, filename, path, expires) VALUES (?, ?, ?, ?)';
+  $c->db->do( $insert, undef, $uuid, $basename, $path, $time );
+
+  return $uuid;
+};
+
+get '/' => sub {
+  my $c = shift;
+  $c->clean;
+  $c->render('index');
+};
+
+post '/' => sub {
+  my $c = shift;
+  $c->clean;
+
+  my $hash = $c->param('hash');
+  my $file = $c->get_file( $hash );
+
+  if ( !$file ) {
+      $c->stash( error => 1 );
+      return $c->render( 'index' );
+  }
+
+  $c->render_file( filepath => $file->{path}, filename => $file->{basename} );
+};
+
+under '/admin' => sub {
+  my $c = shift;
+
+  return 1 if $c->basic_auth(
+    realm => sub { return 1 if "@_" eq join ' ', app->config->{auth}->{user}, app->config->{auth}->{password} }
+  );
+
+  return 0;
+};
+
+get '/list' => sub {
+  my $c = shift;
+  $c->clean;
+
+  my $sql = 'SELECT access_hash, path, expires, filename FROM file_dump';
+  my $sth = $c->db->prepare( $sql );
+
+  $sth->execute;
+  my @files;
+  while ( my ($hash, $path, $expires, $name) = $sth->fetchrow_array ) {
+    push @files, {
+      hash     => $hash,
+      path     => $path,
+      expires  => $expires,
+      filename => $name,
+    };
+  }
+
+  $c->stash( files => \@files );
+  $c->render('file_list');
+};
+
+get '/add' => sub {
+  my $c = shift;
+  $c->clean;
+
+  $c->render( 'admin' );
+};
+
+post '/add' => sub {
+  my $c = shift;
+  $c->clean;
+
+  my $hash = $c->insert_file;
+  $c->flash( hash => $hash );
+
+  $c->redirect_to( $c->url_for( '/admin/add' ) );
+};
+
+app->start;
+__DATA__
+
+@@ file_list.html.ep
+% layout 'default';
+% title 'All files';
+<table>
+  <thead>
+    <tr>
+      <th>Expires</th>
+      <th>Path</th>
+      <th>Filename</th>
+      <th>Hash</th>
+    </tr>
+  </thead>
+  <tbody>
+  % for my $file ( @{ $files } ) {
+    <tr>
+      <td><%= scalar localtime $file->{expires} %></td>
+      <td><%= $file->{filename} %></td>
+      <td><%= $file->{path} %></td>
+      <td><%= $file->{hash} %></td>
+    </tr>
+  % }
+  </tbody>
+</table>
+
+@@ admin.html.ep
+% layout 'default';
+% title 'Add a file';
+<h1>Add new file to file_dump</h1>
+% if ( flash('hash') ) {
+<div style="background: #680121">Hash: <%= flash('hash') %></div>
+% }
+<form action="/admin/add" method="post" enctype="multipart/form-data">
+<input type="file" name="to_dump" /><br />
+<input type="text" name="days" placeholder="days to expire (default: 7)" />
+<br />
+<button type="submit" value="Upload File!">Upload File!</button>
+</form>
+
+@@ index.html.ep
+% layout 'default';
+% title 'Welcome';
+<h1>Welcome to the Perl-Academy.de file dump!</h1>
+% if ( stash('error') ) {
+<div style="background-color:#dd9329">File doesn't exist</div>
+% }
+<form action="/" method="post">
+<input type="text" name="hash" value="<%= stash('hash') %>" />
+<br />
+<button type="submit" value="Get File!">Get File!</button>
+</form>
+
+@@ layouts/default.html.ep
+<!DOCTYPE html>
+<html>
+  <head><title><%= title %></title></head>
+  <body><%= content %></body>
+</html>

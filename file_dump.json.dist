@@ -1,0 +1,11 @@
+{
+  "upload_path" : "/home/reneeb/dev/git/SonstigeSoftware/file_dump/uploads",
+  "db" : "/home/reneeb/dev/git/SonstigeSoftware/file_dump/dump.db",
+  "auth" : {
+    "user": "admin",
+    "password" : "test"
+  },
+  "hypnotoad" : {
+    "listen" : [ "http://127.0.0.1:9630" ]
+  }
+}
