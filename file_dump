@@ -10,6 +10,9 @@ plugin 'BasicAuth';
 plugin 'JSONConfig';
 plugin 'RenderFile';
 
+my $max_message_size        = app->config->{max_message_size};
+$ENV{MOJO_MAX_MESSAGE_SIZE} = $max_message_size if $max_message_size;
+
 my $db;
 helper db => sub {
   $db //= DBI->connect('DBI:SQLite:' . app->config->{db}, "", "") || die $DBI::errstr;
