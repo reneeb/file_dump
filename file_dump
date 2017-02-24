@@ -5,6 +5,7 @@ use strict;
 
 use Data::UUID;
 use DBI;
+use Mojo::File;
 
 plugin 'BasicAuth';
 plugin 'JSONConfig';
